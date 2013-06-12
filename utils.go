@@ -30,8 +30,17 @@ func initdb() {
 
 func startdb() {
 	log.Println("db: start mongod")
-	c := exec.Command("mongod_win64.exe", "--dbpath=db")
-	go c.Run()
+	exes := []string{
+		"./mongod_win64.exe",
+		"./mongod_linux64",
+	}
+	for _, s := range exes {
+		go func() {
+			c := exec.Command(s, "--dbpath=db")
+			err := c.Run()
+			log.Println(err)
+		}()
+	}
 }
 
 func C(c string) *mgo.Collection {
@@ -42,9 +51,13 @@ func Test() {
 	log.Println("starts")
 	startdb()
 	initdb()
-	go parse_loop()
-	go download_loop()
+	menu_zongyi_output()
+	if false {
+		go parse_loop()
+		go download_loop()
+	}
 	for {
 		time.Sleep(time.Hour)
 	}
 }
+

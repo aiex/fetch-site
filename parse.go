@@ -52,7 +52,10 @@ func (m *parseS) end() {
 
 	got := 0
 	n := len(m.list)
+	t := time.Now().UnixNano()
 	for _, l := range m.list {
+		l["createtime"] = t
+		t--
 		err := C("videos").Insert(l)
 		if err != nil && mgo.IsDup(err) {
 			n--
@@ -70,7 +73,7 @@ func (m *parseS) end() {
 }
 
 func getmatch(str,reg string) (ret string) {
-	re, _ := regexp.Compile(reg)	
+	re, _ := regexp.Compile(reg)
 	arr := re.FindAllStringSubmatch(str, -1)
 	if len(arr)>0 {
 		ret = arr[0][1]
@@ -140,7 +143,7 @@ func parse_showpage_movie(url string) (ret bson.M) {
 }
 
 func parse_searchpage_movie(search string) (list []string) {
-	_, str := curl.String(search)	
+	_, str := curl.String(search)
 	//fmt.Println(str)
 	url := ""
 
@@ -204,7 +207,7 @@ func parse_movie() {
 }
 
 func parse_searchpage_news(search,tag string) (list []bson.M) {
-	_, str := curl.String(search)	
+	_, str := curl.String(search)
 	for _, l := range strings.Split(str, "\n") {
 		if strings.Contains(l, "v_title") {
 			b := bson.M{}
@@ -358,6 +361,7 @@ func dump_showpage_zongyi(url string) {
 
 func parse_loop() {
 	for {
+		log.Println("fetch:", "starts")
 		go parse_zongyi()
 		go parse_news()
 		go parse_movie()
