@@ -5,16 +5,17 @@ import (
 	"github.com/shopsmart/mgo/bson"
 	"github.com/shopsmart/mgo"
 
-	"encoding/json"
+	"log"
 	"io/ioutil"
-	"fmt"
+	"encoding/json"
+	"path/filepath"
+	_ "fmt"
 	"sort"
 	"time"
-	"log"
 )
 
 func menuqry(opts... interface{}) *mgo.Query{
-	m := bson.M{}
+	m := bson.M{"fetched": bson.M{"$exists": true}}
 	for i := 0; i < len(opts); i += 2 {
 		m[opts[i].(string)] = opts[i+1]
 	}
@@ -34,7 +35,7 @@ func menu_cat_dfs(seq []string, at int, title string, qry... interface{}) (ret b
 		for _, n := range nodes {
 			child = append(child, bson.M{
 				"type": "url",
-				"url": "",
+				"url": n["url"],
 				"title": n["title"],
 			})
 		}
@@ -54,11 +55,9 @@ func menu_cat_dfs(seq []string, at int, title string, qry... interface{}) (ret b
 	return
 }
 
-func menu_zongyi_output() {
-	ret := menu_cat_dfs([]string{"series", "cat1", "cat2"}, 0, "综艺", "cat","zongyi")
-	b, _ := json.Marshal(ret)
-	ioutil.WriteFile("zongyi.json", b, 0777)
-	log.Println("menu:", "zongyi", len(b), "bytes")
+func menu_zongyi_output() (ret bson.M){
+	ret = menu_cat_dfs([]string{"series", "cat1", "cat2"}, 0, "综艺", "cat","zongyi")
+	return
 }
 
 func news_getone(tag string) (ret bson.M) {
@@ -70,13 +69,13 @@ func news_getone(tag string) (ret bson.M) {
 	menuqry(
 		"cat", "news",
 		"cat1", tag,
-	}).Sort("-createtime").Limit(40).All(&arr)
+	).Sort("-createtime").Limit(40).All(&arr)
 
 	for _, a := range arr {
 		child = append(child, bson.M{
 			"title": a["title"],
 			"type": "url",
-			"url": a["_id"],
+			"url": a["url"],
 		})
 	}
 	ret["child"] = child
@@ -84,7 +83,7 @@ func news_getone(tag string) (ret bson.M) {
 	return
 }
 
-func menu_news_output() {
+func menu_news_output() (ret bson.M) {
 	list := map[string]string {
 		"social": "社会新闻",
 		"tech": "科技新闻",
@@ -94,7 +93,7 @@ func menu_news_output() {
 		"money": "财经新闻",
 		"law": "法律新闻",
 	}
-	ret := bson.M{}
+	ret = bson.M{}
 	child := []bson.M{}
 	for k,v := range list {
 		a := news_getone(k)
@@ -104,8 +103,8 @@ func menu_news_output() {
 	ret["title"] = "新闻"
 	ret["type"] = "dir"
 	ret["child"] = child
-	b, _ := json.Marshal(ret)
-	ioutil.WriteFile("news.json", b, 0777)
+
+	return
 }
 
 func movie_get_node(title string, qry... interface{}) (ret bson.M) {
@@ -117,74 +116,84 @@ func movie_get_node(title string, qry... interface{}) (ret bson.M) {
 	for _, m := range child {
 		child = append(child, bson.M{
 			"type": "url",
-			"url": m["_id"],
+			"url": m["url"],
 			"title": m["title"],
 		})
 	}
-	node["child"] = child
+	ret["child"] = child
 	return
 }
 
-func menu_movie_output() {
+func menu_movie_output() (ret bson.M) {
 	ret_child := []bson.M{}
 
 	typs := []string{}
-	qry := []string{"cat","movie"}
-	menuqry().Distinct(&typs)
-	fmt.Println("by-type", len(typs))
+	qry := []interface{}{"cat","movie"}
+	menuqry(qry...).Distinct("type", &typs)
+	//fmt.Println("by-type", len(typs))
 	for _, t := range typs {
-		node := movie_get_node(append(qry, "type",t)...)
+		node := movie_get_node(t, append(qry, "type",t)...)
 		ret_child = append(ret_child, node)
 	}
 
 	tags := []string{}
-	q.Distinct("tags", &tags)
-	fmt.Println("by-tag", len(tags))
+	menuqry(qry...).Distinct("tags", &tags)
+	//fmt.Println("by-tag", len(tags))
 	bytag_child := []bson.M{}
 	for _, tag := range tags {
-		node := movie_get_node(bson.M{
-			"tags": bson.M{"$in": []string{tag}},
-		}, tag)
+		node := movie_get_node(tag, append(qry, "tags",tag)...)
 		bytag_child = append(bytag_child, node)
 	}
 	bytag := bson.M{"type":"dir", "title":"按类型", "child":bytag_child}
 	ret_child = append(ret_child, bytag)
 
 	years := []int{}
-	q.Distinct("year", &years)
+	menuqry(qry...).Distinct("year", &years)
 	sort.Sort(sort.Reverse(sort.IntSlice(years)))
-	fmt.Println("by-date", len(years))
+	//fmt.Println("by-date", len(years))
 	bydate_child := []bson.M{}
 	for _, year := range years {
-		node := movie_get_node(bson.M{
-			"year": year,
-		}, fmt.Sprintf("%d", year))
+		node := movie_get_node(string(year), append(qry, "year",year)...)
 		bydate_child = append(bydate_child, node)
 	}
 	bydate := bson.M{"type":"dir", "title":"按上映时间", "child":bydate_child}
 	ret_child = append(ret_child, bydate)
 
 	regions := []string{}
-	q.Distinct("regions", &regions)
-	fmt.Println("by-regions", len(regions))
+	menuqry(qry...).Distinct("regions", &regions)
+	//fmt.Println("by-regions", len(regions))
 	byregion_child := []bson.M{}
 	for _, r := range regions {
-		node := movie_get_node(bson.M{
-			"regions": r,
-		}, r)
+		node := movie_get_node(r, append(qry, "regions",r)...)
 		byregion_child = append(byregion_child, node)
 	}
 	byregion := bson.M{"type":"dir", "title":"按地区", "child":byregion_child}
 	ret_child = append(ret_child, byregion)
 
-	ret := bson.M{"type":"dir", "title":"电影", "child":ret_child}
-	b, _ := json.Marshal(ret)
-	ioutil.WriteFile("movies.json", b, 0777)
+	ret = bson.M{"type":"dir", "title":"电影", "child":ret_child}
+	return
+}
+
+func menu_all_output() (ret bson.M) {
+	ret = bson.M{}
+	child := []bson.M{}
+	ret["type"] = "dir"
+
+	child = append(child, menu_news_output())
+	child = append(child, menu_zongyi_output())
+	child = append(child, menu_movie_output())
+
+	ret["child"] = child
+	return
 }
 
 func menu_loop() {
+	log.Println("menu: loop starts")
 	for {
-		menu_movie_output()
+		ret := menu_all_output()
+		b, _ := json.Marshal(ret)
+		ioutil.WriteFile(filepath.Join("www", "menu.json"), b, 0777)
+		log.Println("menu:", "update", len(b), "bytes")
 		time.Sleep(time.Second*60)
 	}
 }

@@ -39,11 +39,15 @@ func download_one(url,prefix,tag string, maxdur time.Duration) {
 	path := filepath.Join(prefix, dir)
 	os.Mkdir(path, 0777)
 
-	err := fetcher.DownloadM3u8(url, path, 
+	filename := filepath.Join(path, "a.ts")
+
+	err := fetcher.DownloadM3u8(url, filename,
 	func (st fetcher.Stat) error {
+		/*
 		if st.Op != "downloading" {
 			return nil
 		}
+		*/
 		log.Println("fetch:", tag, dir, curl.PrettyDur(st.Dur),
 				st.Io.Speedstr,
 				curl.PrettyPer(st.Per), curl.PrettySize(st.Size))
@@ -52,12 +56,15 @@ func download_one(url,prefix,tag string, maxdur time.Duration) {
 			return errors.New("video too long")
 		}
 		return nil
-	}, "savedir")
+	}, "timeout=", 10, "maxspeed=", 1024*300)
 
 	C("videos").Update(bson.M{"_id": url}, bson.M{
-		"$set": bson.M{"fetched": dir},
+		"$set": bson.M {
+			"fetched": dir,
+			"url": "/fetch/"+dir+"/a.ts",
+		},
 	})
-	
+
 	log.Println("fetch: download end", err)
 }
 
@@ -103,12 +110,14 @@ func fetchone_zongyi() (url string) {
 	return
 }
 
-func download_loop() {
+func fetch_loop() {
 
 	type fetchS struct {
 		name string
 		f func () (string)
 	}
+
+	log.Println("fetch: loop starts")
 
 	for {
 		fetchs := []fetchS {
@@ -116,7 +125,7 @@ func download_loop() {
 			fetchS{"zongyi", fetchone_zongyi},
 			fetchS{"movie", fetchone_movie},
 		}
-		
+
 		var f fetchS
 		var url string
 		if false {

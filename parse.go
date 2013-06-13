@@ -360,10 +360,11 @@ func dump_showpage_zongyi(url string) {
 }
 
 func parse_loop() {
+	log.Println("parse: loop starts")
 	for {
-		log.Println("fetch:", "starts")
-		go parse_zongyi()
+		log.Println("parse:", "starts")
 		go parse_news()
+		go parse_zongyi()
 		go parse_movie()
 		time.Sleep(time.Second*120)
 	}

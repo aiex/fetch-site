@@ -9,6 +9,9 @@ import (
 	"os/exec"
 	"log"
 	"time"
+	"net/http"
+	"strings"
+	"path/filepath"
 )
 
 var (
@@ -37,8 +40,8 @@ func startdb() {
 	for _, s := range exes {
 		go func() {
 			c := exec.Command(s, "--dbpath=db")
-			err := c.Run()
-			log.Println(err)
+			c.Run()
+			//log.Println(err)
 		}()
 	}
 }
@@ -47,14 +50,45 @@ func C(c string) *mgo.Collection {
 	return gSess.DB("site").C(c)
 }
 
+func http_handle(w http.ResponseWriter, r *http.Request) {
+	path := filepath.Clean(r.URL.Path[1:])
+	switch {
+	case strings.HasPrefix(r.URL.Path, "/fetch"),
+			 strings.HasPrefix(r.URL.Path, "/www"):
+		log.Println("http:", path)
+		http.ServeFile(w, r, path)
+	default:
+		http.Error(w, "not found", 404)
+	}
+}
+
+func http_loop() {
+	http.HandleFunc("/", http_handle)
+	http.ListenAndServe(":1989", nil)
+}
+
 func Test() {
 	log.Println("starts")
 	startdb()
 	initdb()
-	menu_zongyi_output()
-	if false {
+	if len(os.Args) > 1 {
+		for _, s := range os.Args[1:] {
+			switch s {
+			case "parse":
+				go parse_loop()
+			case "fetch":
+				go fetch_loop()
+			case "menu":
+				go menu_loop()
+			case "http":
+				go http_loop()
+			}
+		}
+	} else {
 		go parse_loop()
-		go download_loop()
+		go fetch_loop()
+		go menu_loop()
+		go http_loop()
 	}
 	for {
 		time.Sleep(time.Hour)
