@@ -21,8 +21,9 @@ type parseS struct {
 	w *sync.WaitGroup
 	list []bson.M
 	n int
-	threadN int
+	threadN,running int
 	starttm time.Time
+	isend bool
 }
 
 func (m *parseS) init() {
@@ -31,12 +32,24 @@ func (m *parseS) init() {
 	m.list = []bson.M{}
 	m.starttm = time.Now()
 	m.w.Add(1)
+
+	go func() {
+		for {
+			if m.isend {
+				return
+			}
+			log.Println("parse:", m.name, "thread created", m.threadN, "running", m.running)
+			time.Sleep(time.Second)
+		}
+	}()
 }
 
 func (m *parseS) thread(cb func()) {
 	m.w.Add(1)
 	m.threadN++
+	m.running++
 	cb()
+	m.running--
 	m.w.Done()
 }
 
@@ -70,6 +83,7 @@ func (m *parseS) end() {
 		"insert", got, "new", n,
 		"time", time.Since(m.starttm),
 		)
+	m.isend = true
 }
 
 func getmatch(str,reg string) (ret string) {
@@ -174,7 +188,7 @@ func parse_searchpage_movie_all(search string, typ string) (ret []bson.M) {
 	return
 }
 
-func parse_movie() {
+func parse_movie() (p *parseS) {
 
 	fmts := map[string]string {
 		// 用户好评
@@ -191,7 +205,7 @@ func parse_movie() {
 
 	urlfmt := "http://www.youku.com/v_olist/"
 
-	p := &parseS{name:"movie"}
+	p = &parseS{name:"movie"}
 	p.init()
 
 	for t, f := range fmts {
@@ -203,7 +217,7 @@ func parse_movie() {
 			})
 		}
 	}
-	p.end()
+	return
 }
 
 func parse_searchpage_news(search,tag string) (list []bson.M) {
@@ -221,22 +235,21 @@ func parse_searchpage_news(search,tag string) (list []bson.M) {
 	return
 }
 
-func parse_news() {
+func parse_news() (p *parseS) {
 	fmts := map[string]string {
 		// 今日最新
 		"social": "t1c91g2143d1p%d.html",
-		"tech": 	"t1c91g2147d1p%d.html",
+		"tech":	  "t1c91g2147d1p%d.html",
 		"life":		"t1c91g2148d1p%d.html",
-		"time": 	"t1c91g2144d1p%d.html",
+		"time":   "t1c91g2144d1p%d.html",
 		"army":		"t1c91g258d1p%d.html",
 		"money":	"t1c91g308d1p%d.html",
-		"law": 		"t1c91g2351d1p%d.html",
+		"law":    "t1c91g2351d1p%d.html",
 	}
 	urlfmt := "http://www.youku.com/v_showlist/"
 
-	p := &parseS{name:"news"}
+	p = &parseS{name:"news"}
 	p.init()
-
 	for tag, f := range fmts {
 		for i := 1; i < 2; i++ {
 			search := fmt.Sprintf(urlfmt+f, i)
@@ -246,11 +259,11 @@ func parse_news() {
 			})
 		}
 	}
-	p.end()
+	return
 }
 
 func parse_showpage_zongyi(showurl string) (title string, episode []string) {
-	_, str := curl.String(showurl)	
+	_, str := curl.String(showurl)
 	for _, l := range strings.Split(str, "\n") {
 		if strings.Contains(l, `<li data=`) {
 			re, _ := regexp.Compile(`<li data="reload_(\d+)"`)
@@ -266,7 +279,7 @@ func parse_showpage_zongyi(showurl string) (title string, episode []string) {
 	return
 }
 
-func parse_showpage_zongyi_all(showurl string) (ret []bson.M) {
+func parse_showpage_zongyi_all(showurl, cat string) (ret []bson.M) {
 	title, epi := parse_showpage_zongyi(showurl)
 	for ie := len(epi)-1; ie >= 0; ie-- {
 		e := epi[ie]
@@ -280,7 +293,7 @@ func parse_showpage_zongyi_all(showurl string) (ret []bson.M) {
 			rl["cat2"] = rl["no"]
 			delete(rl, "no")
 			rl["series"] = title
-			rl["cat"] = "zongyi"
+			rl["cat"] = cat
 			ret = append(ret, rl)
 		}
 	}
@@ -289,7 +302,7 @@ func parse_showpage_zongyi_all(showurl string) (ret []bson.M) {
 		rl["cat1"] = rl["no"]
 		delete(rl, "no")
 		rl["series"] = title
-		rl["cat"] = "zongyi"
+		rl["cat"] = cat
 		ret = append(ret, rl)
 	}
 	return
@@ -318,7 +331,7 @@ func parse_episode_data(eurl string) (ret []bson.M) {
 }
 
 func parse_searchpage_zongyi(search string) (list []string) {
-	_, str := curl.String(search)	
+	_, str := curl.String(search)
 	for _, l := range strings.Split(str, "\n") {
 		if strings.Contains(l, "p_title") {
 			url := gethref(l)
@@ -328,28 +341,39 @@ func parse_searchpage_zongyi(search string) (list []string) {
 	return
 }
 
-func parse_zongyi() {
-	urlfmt := "http://www.youku.com/v_olist/"
-	// 今日增加播放
-	urlfmt += "c_85_a__s__g__r__lg__im__st__mt__d_1_et_0_fv_0_fl__fc__fe_1_o_7_p_%d.html"
+func parse_zongyi_template(urlfmt, cat string) (p *parseS) {
 
-	p := &parseS{name:"zongyi"}
+	p = &parseS{name:cat}
 	p.init()
 
 	for i := 1; i < 2; i++ {
 		list := parse_searchpage_zongyi(fmt.Sprintf(urlfmt, i))
 		for _, u := range list {
 			p.thread(func () {
-				list := parse_showpage_zongyi_all(u)
+				list := parse_showpage_zongyi_all(u, "zongyi")
 				p.add(list)
 			})
 		}
 	}
-	p.end()
+	return
+}
+
+func parse_zongyi() (p *parseS) {
+	// 综艺今日增加播放
+	urlfmt := "http://www.youku.com/v_olist/"
+	urlfmt += "c_85_a__s__g__r__lg__im__st__mt__d_1_et_0_fv_0_fl__fc__fe_1_o_7_p_%d.html"
+	return parse_zongyi_template(urlfmt, "zongyi")
+}
+
+func parse_jilu() (p *parseS) {
+	// 纪录片今日增加播放
+	urlfmt := "http://www.youku.com/v_olist/"
+	urlfmt += "c_84_a__s__g__r__lg__im__st__mt__tg__d_1_et_0_fv_0_fl__fc__fe__o_7_p_%d.html"
+	return parse_zongyi_template(urlfmt, "jilu")
 }
 
 func dump_showpage_zongyi(url string) {
-	ret := parse_showpage_zongyi_all(url)
+	ret := parse_showpage_zongyi_all(url, "")
 	for _, r := range ret {
 		if _, ok := r["cat2"]; ok {
 			fmt.Println(r["cat1"], r["cat2"], r["title"])
@@ -361,11 +385,24 @@ func dump_showpage_zongyi(url string) {
 
 func parse_loop() {
 	log.Println("parse: loop starts")
+
+	type parseF func () (*parseS)
+
+	loop := func (cb parseF) {
+		for {
+			p := cb()
+			p.end()
+			time.Sleep(time.Second*120)
+		}
+	}
+
+	go loop(parse_news)
+	go loop(parse_zongyi)
+	go loop(parse_movie)
+	go loop(parse_jilu)
+
 	for {
-		log.Println("parse:", "starts")
-		go parse_news()
-		go parse_zongyi()
-		go parse_movie()
 		time.Sleep(time.Second*120)
 	}
 }
+

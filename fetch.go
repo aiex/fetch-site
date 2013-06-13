@@ -151,6 +151,7 @@ func fetch_loop() {
 		if f.name == "news" {
 			maxdur = time.Minute*20
 		}
+		log.Println("fetch: downloading", url)
 		download_one(url, "fetch", f.name, maxdur)
 		time.Sleep(time.Second)
 	}
