@@ -2,16 +2,13 @@
 package site
 
 import (
-
 	"github.com/shopsmart/mgo"
 
+	"strings"
 	"os"
 	"os/exec"
 	"log"
 	"time"
-	"net/http"
-	"strings"
-	"path/filepath"
 )
 
 var (
@@ -50,46 +47,69 @@ func C(c string) *mgo.Collection {
 	return gSess.DB("site").C(c)
 }
 
-func http_handle(w http.ResponseWriter, r *http.Request) {
-	path := filepath.Clean(r.URL.Path[1:])
-	switch {
-	case strings.HasPrefix(r.URL.Path, "/fetch"),
-			 strings.HasPrefix(r.URL.Path, "/www"):
-		log.Println("http:", path)
-		http.ServeFile(w, r, path)
-	default:
-		http.Error(w, "not found", 404)
-	}
-}
-
-func http_loop() {
-	http.HandleFunc("/", http_handle)
-	http.ListenAndServe(":1989", nil)
-}
-
 func Test() {
 	log.Println("starts")
+
+	if len(os.Args) < 2 {
+		log.Println("no args")
+		return
+	}
+
+	loops := []string{}
+	dos := []string{}
+	args := os.Args[1:]
+	for i, o := range args {
+		if o == "-loop" && i+1 < len(args) {
+			loops = strings.Split(args[i+1], ",")
+		}
+		if o == "-do" && i+1 < len(args) {
+			dos = strings.Split(args[i+1], ",")
+		}
+	}
+
+	if len(loops) == 0 && len(dos) == 0 {
+		log.Println("must specify -loop or -do")
+		return
+	}
+
 	startdb()
 	initdb()
-	if len(os.Args) > 1 {
-		for _, s := range os.Args[1:] {
-			switch s {
-			case "parse":
-				go parse_loop()
-			case "fetch":
-				go fetch_loop()
-			case "menu":
-				go menu_loop()
-			case "http":
-				go http_loop()
-			}
+
+	n := 0
+	for _, s := range loops {
+		switch s {
+		case "menu":
+			go menu_loop()
+			n++
+		case "fetch":
+			go fetch_loop()
+			n++
+		case "parse":
+			go parse_loop()
+			n++
+		case "http":
+			go http_loop()
+			n++
 		}
-	} else {
-		go parse_loop()
-		go fetch_loop()
-		go menu_loop()
-		go http_loop()
 	}
+	if len(loops) > 0 && n == 0 {
+		log.Println("please specify operations: menu,fetch,parse,http")
+		return
+	}
+
+	for _, s := range dos {
+		switch s {
+		case "parse":
+			parse_oneshot()
+		case "menu":
+			menu_oneshot()
+		}
+	}
+
+	if len(loops) == 0 {
+		return
+	}
+
 	for {
 		time.Sleep(time.Hour)
 	}

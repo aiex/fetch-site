@@ -5,46 +5,154 @@ import (
 	"github.com/shopsmart/mgo/bson"
 	"github.com/shopsmart/mgo"
 
+	"os"
 	"log"
 	"io/ioutil"
 	"encoding/json"
 	"path/filepath"
-	_ "fmt"
+	"fmt"
 	"sort"
 	"time"
+	"reflect"
 )
 
-func menuqry(opts... interface{}) *mgo.Query{
-	m := bson.M{"fetched": bson.M{"$exists": true}}
+type menuM struct {
+	bson.M
+	path []*menuM
+	ptr *menuM
+}
+
+func (m *menuM) arr(a string) (ret []*menuM) {
+	ret = []*menuM{}
+	_ret, ok := m.M[a]
+	if !ok {
+		return
+	}
+	_ret2, ok2 := _ret.([]interface{})
+	if ok2 {
+		for _, r := range _ret2 {
+			_ret3, ok3 := r.(map[string]interface{})
+			if ok3 { ret = append(ret, &menuM{M:bson.M(_ret3)}) }
+		}
+	}
+	if false {
+		log.Println(reflect.TypeOf(_ret).String())
+		log.Println(len(ret))
+	}
+	return
+}
+
+func (m *menuM) Childs() (ret []*menuM) {
+	ret = m.arr("child")
+	return
+}
+
+func (m *menuM) IsDir() bool {
+	return m.str("type") == "dir"
+}
+
+func (m *menuM) Url() string {
+	return m.str("url")
+}
+
+func (m *menuM) str(name string) (ret string) {
+	ret, _ = m.M[name].(string)
+	return
+}
+
+func (m *menuM) Id() string {
+	id := m.str("id")
+	return id
+}
+
+func (m *menuM) Title() string {
+	return m.str("title")
+}
+
+func (m *menuM) Path() (ret []*menuM) {
+	return m.path
+}
+
+func (m *menuM) findid(matchid string) {
+	m.path = []*menuM{m}
+	id := m.str("id")
+	if id == matchid {
+		m.ptr = m
+	}
+	for _, c := range m.Childs() {
+		c.findid(matchid)
+		if c.ptr != nil {
+			m.ptr = c.ptr
+			m.path = append(m.path, c.path...)
+			return
+		}
+	}
+	return
+}
+
+func (m *menuM) load(filename string) (err error) {
+	var f *os.File
+	f, err = os.Open(filename)
+	if err != nil {
+		log.Println("menu:", "open", filename, "failed")
+		return
+	}
+	dec := json.NewDecoder(f)
+
+	tree := bson.M{}
+	err = dec.Decode(&tree)
+	if err != nil {
+		log.Println("menu:", "decode", filename, "failed")
+		return
+	}
+	tree["title"] = "根目录"
+	*m = menuM{M:tree, path:[]*menuM{m}}
+	return
+}
+
+
+type menuS struct {
+	fetched bool
+	id int
+}
+
+func (mu *menuS) qry(opts... interface{}) *mgo.Query{
+	m := bson.M{}
+	if mu.fetched {
+		m["fetched"] = bson.M{"$exists": true}
+	}
 	for i := 0; i < len(opts); i += 2 {
 		m[opts[i].(string)] = opts[i+1]
 	}
 	return C("videos").Find(m)
 }
 
-func menu_cat_dfs(seq []string, at int, title string, qry... interface{}) (ret bson.M) {
+func (mu *menuS) cat_dfs(seq []string, mustcat bool, at int, title string, qry... interface{}) (ret bson.M) {
 	ret = bson.M{}
 	child := []bson.M{}
 
-	q := menuqry(qry...)
+	q := mu.qry(qry...)
 	n, _ := q.Count()
 
-	if n < 20 || at == len(seq) {
+	if (mustcat && n < 20) || at == len(seq) {
 		nodes := []bson.M{}
-		q.All(&nodes)
+		q.Sort("-createtime").All(&nodes)
 		for _, n := range nodes {
 			child = append(child, bson.M{
 				"type": "url",
 				"url": n["url"],
 				"title": n["title"],
+				"id": fmt.Sprint(mu.id),
 			})
+			mu.id++
 		}
 	} else {
 		cats := []string{}
 		q.Distinct(seq[at], &cats)
+		sort.Sort(sort.Reverse(sort.StringSlice(cats)))
 		for _, c := range cats {
-			child = append(child, menu_cat_dfs(
-				seq, at+1, c, append(qry, seq[at],c)...,
+			child = append(child, mu.cat_dfs(
+				seq, mustcat, at+1, c, append(qry, seq[at],c)...,
 			))
 		}
 	}
@@ -52,149 +160,100 @@ func menu_cat_dfs(seq []string, at int, title string, qry... interface{}) (ret b
 	ret["type"] = "dir"
 	ret["title"] = title
 	ret["child"] = child
+	ret["id"] = fmt.Sprint(mu.id)
+	mu.id++
 	return
 }
 
-func menu_zongyi_output() (ret bson.M){
-	ret = menu_cat_dfs([]string{"series", "cat1", "cat2"}, 0, "综艺", "cat","zongyi")
+func (mu *menuS) jilu() (ret bson.M) {
+	ret = mu.cat_dfs([]string{"cat1"}, false, 0, "纪录片", "cat","jilu")
 	return
 }
 
-func news_getone(tag string) (ret bson.M) {
-	ret = bson.M{}
-	ret["type"] = "dir"
+func (mu *menuS) zongyi() (ret bson.M) {
+	ret = mu.cat_dfs([]string{"series", "cat1", "cat2"}, false, 0, "综艺", "cat","zongyi")
+	return
+}
+
+func (mu *menuS) news() (ret bson.M) {
+	ret = mu.cat_dfs([]string{"play"}, true, 0, "新闻", "cat","news")
+	return
+}
+
+func (mu *menuS) jiaoyu() (ret bson.M) {
+	ret = mu.cat_dfs([]string{"cat1"}, false, 0, "教育", "cat","jiaoyu")
+	return
+}
+
+func (mu *menuS) yule() (ret bson.M) {
+	ret = mu.cat_dfs([]string{}, false, 0, "娱乐", "cat","yule")
+	return
+}
+
+func (mu *menuS) tiyu() (ret bson.M) {
+	ret = mu.cat_dfs([]string{}, false, 0, "体育", "cat","tiyu")
+	return
+}
+
+func (mu *menuS) qiche() (ret bson.M) {
+	ret = mu.cat_dfs([]string{}, false, 0, "汽车", "cat","qiche")
+	return
+}
+
+func (mu *menuS) dianshi() (ret bson.M) {
+	ret = mu.cat_dfs([]string{"series", "cat1", "cat2"}, true, 0, "电视剧", "cat","dianshi")
+	return
+}
+
+func (mu *menuS) movie() (ret bson.M) {
 	child := []bson.M{}
-
-	arr := []bson.M{}
-	menuqry(
-		"cat", "news",
-		"cat1", tag,
-	).Sort("-createtime").Limit(40).All(&arr)
-
-	for _, a := range arr {
-		child = append(child, bson.M{
-			"title": a["title"],
-			"type": "url",
-			"url": a["url"],
-		})
-	}
-	ret["child"] = child
-
-	return
-}
-
-func menu_news_output() (ret bson.M) {
-	list := map[string]string {
-		"social": "社会新闻",
-		"tech": "科技新闻",
-		"life": "生活新闻",
-		"time": "时政新闻",
-		"army": "军事新闻",
-		"money": "财经新闻",
-		"law": "法律新闻",
-	}
-	ret = bson.M{}
-	child := []bson.M{}
-	for k,v := range list {
-		a := news_getone(k)
-		a["title"] = v
-		child = append(child, a)
-	}
-	ret["title"] = "新闻"
-	ret["type"] = "dir"
-	ret["child"] = child
-
-	return
-}
-
-func movie_get_node(title string, qry... interface{}) (ret bson.M) {
-	//var n int
-	//n, _ = q2.Count()
-	ret = bson.M{"type":"dir", "title":title}
-	child := []bson.M{}
-	menuqry(qry).Sort("-createtime").All(&child)
-	for _, m := range child {
-		child = append(child, bson.M{
-			"type": "url",
-			"url": m["url"],
-			"title": m["title"],
-		})
-	}
-	ret["child"] = child
-	return
-}
-
-func menu_movie_output() (ret bson.M) {
-	ret_child := []bson.M{}
-
-	typs := []string{}
 	qry := []interface{}{"cat","movie"}
-	menuqry(qry...).Distinct("type", &typs)
-	//fmt.Println("by-type", len(typs))
-	for _, t := range typs {
-		node := movie_get_node(t, append(qry, "type",t)...)
-		ret_child = append(ret_child, node)
-	}
-
-	tags := []string{}
-	menuqry(qry...).Distinct("tags", &tags)
-	//fmt.Println("by-tag", len(tags))
-	bytag_child := []bson.M{}
-	for _, tag := range tags {
-		node := movie_get_node(tag, append(qry, "tags",tag)...)
-		bytag_child = append(bytag_child, node)
-	}
-	bytag := bson.M{"type":"dir", "title":"按类型", "child":bytag_child}
-	ret_child = append(ret_child, bytag)
-
-	years := []int{}
-	menuqry(qry...).Distinct("year", &years)
-	sort.Sort(sort.Reverse(sort.IntSlice(years)))
-	//fmt.Println("by-date", len(years))
-	bydate_child := []bson.M{}
-	for _, year := range years {
-		node := movie_get_node(string(year), append(qry, "year",year)...)
-		bydate_child = append(bydate_child, node)
-	}
-	bydate := bson.M{"type":"dir", "title":"按上映时间", "child":bydate_child}
-	ret_child = append(ret_child, bydate)
-
-	regions := []string{}
-	menuqry(qry...).Distinct("regions", &regions)
-	//fmt.Println("by-regions", len(regions))
-	byregion_child := []bson.M{}
-	for _, r := range regions {
-		node := movie_get_node(r, append(qry, "regions",r)...)
-		byregion_child = append(byregion_child, node)
-	}
-	byregion := bson.M{"type":"dir", "title":"按地区", "child":byregion_child}
-	ret_child = append(ret_child, byregion)
-
-	ret = bson.M{"type":"dir", "title":"电影", "child":ret_child}
+	child = append(child, mu.cat_dfs([]string{"type"}, true, 0, "按类型", qry...))
+	child = append(child, mu.cat_dfs([]string{"year"}, true, 0, "按年份", qry...))
+	child = append(child, mu.cat_dfs([]string{"regions"}, true, 0, "按地区", qry...))
+	ret = bson.M{"type":"dir", "title":"电影", "child":child, "id":fmt.Sprint(mu.id)}
+	mu.id++
 	return
 }
 
-func menu_all_output() (ret bson.M) {
-	ret = bson.M{}
+func (mu *menuS) all() (ret bson.M) {
 	child := []bson.M{}
+	child = append(child, mu.yule())
+	child = append(child, mu.news())
+	child = append(child, mu.zongyi())
+	child = append(child, mu.movie())
+	child = append(child, mu.jilu())
+	child = append(child, mu.jiaoyu())
+	child = append(child, mu.tiyu())
+	child = append(child, mu.qiche())
+	child = append(child, mu.dianshi())
+
+	ret = bson.M{}
 	ret["type"] = "dir"
-
-	child = append(child, menu_news_output())
-	child = append(child, menu_zongyi_output())
-	child = append(child, menu_movie_output())
-
 	ret["child"] = child
 	return
+}
+
+func menu_oneshot() {
+	log.Println("menu:", "oneshot")
+	mu := &menuS{}
+	ret := mu.all()
+	b, _ := json.Marshal(ret)
+	ioutil.WriteFile(filepath.Join("www", "all.json"), b, 0777)
+	log.Println("menu:", "all", len(b), "bytes")
+
+	mu = &menuS{fetched:true}
+	ret = mu.all()
+	b, _ = json.Marshal(ret)
+	ioutil.WriteFile(filepath.Join("www", "fetched.json"), b, 0777)
+	log.Println("menu:", "menu", len(b), "bytes")
 }
 
 func menu_loop() {
 	log.Println("menu: loop starts")
 	for {
-		ret := menu_all_output()
-		b, _ := json.Marshal(ret)
-		ioutil.WriteFile(filepath.Join("www", "menu.json"), b, 0777)
-		log.Println("menu:", "update", len(b), "bytes")
-		time.Sleep(time.Second*60)
+		menu_oneshot()
+		time.Sleep(time.Hour*4)
 	}
 }
 

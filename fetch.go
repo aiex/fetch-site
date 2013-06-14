@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"errors"
 	"math/rand"
+	"strings"
 	"log"
 )
 
@@ -29,7 +30,7 @@ func strhash(in string) (r int) {
 func canfetch() (bson.M) {
 	return bson.M {
 		"fetched": bson.M{"$exists":false},
-		"error": bson.M{"$exists":false},	
+		"error": bson.M{"$exists":false},
 	}
 }
 
@@ -56,7 +57,7 @@ func download_one(url,prefix,tag string, maxdur time.Duration) {
 			return errors.New("video too long")
 		}
 		return nil
-	}, "timeout=", 10, "maxspeed=", 1024*300)
+	}, "timeout=", 10, "maxspeed=", 1024*100)
 
 	C("videos").Update(bson.M{"_id": url}, bson.M{
 		"$set": bson.M {
@@ -76,28 +77,25 @@ func bson_getid(b bson.M) (id string) {
 	return
 }
 
-func fetchone_movie() (url string) {
+type fetchS struct {
+	cat string
+	n int
+	flag string
+}
+
+func (m *fetchS) one() (url string) {
 	ret := bson.M{}
 	qry := canfetch()
-	qry["cat"] = "movie"
+	qry["cat"] = m.cat
 	C("videos").Find(qry).Sort("-createtime").Limit(1).One(&ret)
 	url = bson_getid(ret)
 	return
 }
 
-func fetchone_news() (url string) {
-	ret := bson.M{}
-	qry := canfetch()
-	qry["cat"] = "news"
-	C("videos").Find(qry).Sort("-createtime").Limit(1).One(&ret)
-	url = bson_getid(ret)
-	return
-}
-
-func fetchone_zongyi() (url string) {
+func (m *fetchS) randser() (url string) {
 	series := []string{}
 	qry := canfetch()
-	qry["cat"] = "zongyi"
+	qry["cat"] = m.cat
 	C("videos").Find(qry).Distinct("series", &series)
 	if len(series) == 0 {
 		return
@@ -105,54 +103,54 @@ func fetchone_zongyi() (url string) {
 	ser := series[rand.Int()%len(series)]
 	qry["series"] = ser
 	ret := bson.M{}
-	C("videos").Find(qry).Sort("-cat1", "-cat2").Limit(1).One(&ret)
+	C("videos").Find(qry).Sort("-createtime").Limit(1).One(&ret)
 	url = bson_getid(ret)
 	return
 }
 
-func fetch_loop() {
-
-	type fetchS struct {
-		name string
-		f func () (string)
+func (m *fetchS) get() {
+	url := ""
+	if strings.Contains(m.flag, "one") {
+		url = m.one()
 	}
+	if strings.Contains(m.flag, "ser") {
+		url = m.randser()
+	}
+	if url == "" {
+		log.Println("fetch: url empty")
+		return
+	}
+	var maxdur time.Duration
+	if strings.Contains(m.flag, "short") {
+		maxdur = time.Minute*20
+	}
+	log.Println("fetch: downloading", url)
+	download_one(url, "fetch", m.cat, maxdur)
+}
+
+func fetch_loop() {
 
 	log.Println("fetch: loop starts")
 
 	for {
-		fetchs := []fetchS {
-			fetchS{"news", fetchone_news},
-			fetchS{"zongyi", fetchone_zongyi},
-			fetchS{"movie", fetchone_movie},
+		fetchs := []*fetchS {
+			&fetchS{"news", 8, "one|short"},
+			&fetchS{"zongyi", 1, "ser"},
+			&fetchS{"yule", 5, "one|short"},
+			&fetchS{"movie", 1, "ser"},
+			&fetchS{"tiyu", 5, "one|short"},
+			&fetchS{"jilu", 1, "ser"},
+			&fetchS{"qiche", 5, "one|short"},
+			&fetchS{"jiaoyu", 1, "ser"},
+			&fetchS{"dianshi", 1, "ser"},
 		}
 
-		var f fetchS
-		var url string
-		if false {
-			f = fetchs[rand.Int()%len(fetchs)]
-		} else {
-			for i := 0; i < len(fetchs); i++ {
-				f = fetchs[i]
-				url = f.f()
-				if url != "" {
-					break
-				}
+		for _, f := range fetchs {
+			for i := 0; i < f.n; i++ {
+				log.Println("fetch:", f.cat, i+1, "/", f.n)
+				f.get()
+				time.Sleep(time.Second)
 			}
 		}
-
-		log.Println("fetch: selecting", f.name)
-		if url == "" {
-			log.Println("fetch: url empty")
-			time.Sleep(time.Second)
-			continue
-		}
-
-		var maxdur time.Duration
-		if f.name == "news" {
-			maxdur = time.Minute*20
-		}
-		log.Println("fetch: downloading", url)
-		download_one(url, "fetch", f.name, maxdur)
-		time.Sleep(time.Second)
 	}
 }
