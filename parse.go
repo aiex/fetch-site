@@ -26,6 +26,9 @@ type parseS struct {
 	starttm time.Time
 	attrs bson.M
 	tm int64
+	logi int
+	logf *log.Logger
+	debug bool
 
 	nrun,ndone,ncurl,ngot,ninsert parseN
 	per float64
@@ -44,11 +47,17 @@ func (m *parseS) init() {
 	m.tm = time.Now().UnixNano()
 }
 
+func (m *parseS) log(a ...interface{}) {
+	if m.debug {
+		log.Println(a...)
+	}
+}
+
 func (m *parseS) task(cb func(*parseS)) {
 	m.l.Lock()
 	defer m.l.Unlock()
 
-	m2 := &parseS{cat:m.cat}
+	m2 := &parseS{cat:m.cat, logi:m.logi+1, logf:m.logf, debug:m.debug}
 	m2.init()
 
 	for k,v := range m.attrs {
@@ -128,6 +137,10 @@ func (m *parseS) add(a bson.M) {
 }
 
 func (m *parseS) insert(a bson.M) {
+	if m.debug {
+		return
+	}
+
 	dt := time.Now()
 	a["cat"] = m.cat
 	a["createtime"] = m.tm
@@ -165,6 +178,10 @@ func gettags(str string) (tags []string) {
 	return
 }
 
+func getlabel(str string) (label string) {
+	return getmatch(str, `<label[^>]*>([^<]+)</label>`)
+}
+
 func getpubdate(str string) (y,m,d int) {
 	ymd := getmatch(str, `<span class="pub"><label>上映:</label>([0-9\-]+)</span>`)
 	fmt.Sscanf(ymd, "%d-%d-%d", &y, &m, &d)
@@ -176,6 +193,31 @@ func getname(str string) (name string) {
 }
 
 func (m *parseS) episode2(str, cati string) {
+	/*
+
+	style1:
+	<li class="ititle"><label>04-18期</label>
+	<a charset="419-5-2" title="百变大咖秀 130418" href="http://v.youku.com/v_show/id_XNTQ0ODcxNzk2.ht
+
+	style2:
+	<li><a href="http://v.youku.com/v_show/id_XNDgwMjk3ODUy.html" \
+	title="有道必有得" charset="416-5-16" target="_blank">\
+	<label class="seriesnum">16</label>有道必有得</a></li>
+
+	style3:
+	<div id="episode_wrap"><div id="episode"><div class="coll_10">
+	<ul>
+	<li><a href="http://v.youku.com/v_show/id_XNTcwNDA4ODQ4.html" \
+	title="爱在春天 TV版 41" charset="411-5-1" target="_blank">41</a></li>
+	</ul>
+
+	style4:
+	<li class="ititle_w"><label>19</label>
+	<a charset="423-5-2" title="弘历的故事" \
+	href="http://v.youku.com/v_show/id_XNTI0NjI1OTc2.html" \
+	target="_blank">弘历的故事</a></li>
+
+	*/
 	larr := strings.Split(str, "\n")
 	coll10 := false
 	for i, l := range larr {
@@ -188,21 +230,25 @@ func (m *parseS) episode2(str, cati string) {
 			title := getattr(l, "title")
 			if href != "" && len(tags) > 0 {
 				m.add(bson.M{cati:tags[0], "_id":href, "title":title})
+				m.log(tags[0], title, href)
 			}
 			continue
 		}
-		if !strings.Contains(l, `<li class="ititle_w`) {
-			continue
-		}
-		if i+1 < len(larr) {
-			no := getmatch(l, `<label>([\d\-]+)`)
+		if (strings.Contains(l, `<li class="ititle_w"><label>`) ||
+			strings.Contains(l, `<li class="ititle"><label>`)) &&
+			i+1 < len(larr) {
+			label := getlabel(l)
 			title := getattr(larr[i+1], "title")
 			href := getattr(larr[i+1], "href")
-			if href == "" {
-				continue
-			}
-
-			m.add(bson.M{cati:no, "_id":href, "title":title})
+			m.add(bson.M{cati:label, "_id":href, "title":title})
+			m.log(label, title, href)
+		}
+		if strings.Contains(l, `<label class="seriesnum">`) {
+			label := getlabel(l)
+			title := getattr(l, "title")
+			href := getattr(l, "href")
+			m.add(bson.M{cati:label, "_id":href, "title":title})
+			m.log(label, title, href)
 		}
 	}
 	return
@@ -305,8 +351,10 @@ func (m *parseS) searchpage_small(search string) {
 	for _, l := range strings.Split(str, "\n") {
 		if strings.Contains(l, "v_title") {
 			b := bson.M{}
+			title := getmatch(l, `title="([^"]+)"`)
 			b["_id"] = getmatch(l, `href="([^"]+)"`)
-			b["title"] = getmatch(l, `title="([^"]+)"`)
+			b["title"] = title
+			m.log(title)
 			m.add(b)
 		}
 	}
@@ -441,7 +489,7 @@ func (m *parseS) tiyu() {
 func (m *parseS) qiche() {
 	// 汽车今日
 	fmts := map[string]string {
-		"最多播放": "t2c98g0d1p%d.html",
+		"最多播放": "t2c104g0d1p%d.html",
 	}
 	m.news_template(fmts)
 }
@@ -499,12 +547,12 @@ func parse_oneshot() {
 			m2.cat = "jilu"
 			m2.jilu()
 		})
-
 		m.task(func (m2 *parseS) {
 			m2.cat = "jiaoyu"
 			m2.jiaoyu()
 		})
 		m.wait()
+
 		log.Println("parse: done in", time.Since(tm))
 		done <- 1
 	}()

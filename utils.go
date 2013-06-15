@@ -103,6 +103,8 @@ func Test() {
 			parse_oneshot()
 		case "menu":
 			menu_oneshot()
+		case "http":
+			http_loop()
 		}
 	}
 

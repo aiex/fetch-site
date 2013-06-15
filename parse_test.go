@@ -2,38 +2,32 @@
 package site
 
 import (
-	"github.com/shopsmart/mgo/bson"
-
 	"testing"
-	"fmt"
 	"os"
+	_"log"
+	"fmt"
 )
 
-
 func TestParseShowpage(t *testing.T) {
-	dump := func (name string, list []bson.M) {
-		fname := "dump."+name
-		f, _ := os.Create(fname)
-		defer f.Close()
-		fmt.Println("testing", name)
-		fmt.Println("total", len(list), "dumpto", fname)
-		for _, l := range list {
-			fmt.Fprintln(f, "  ", l)
-		}
-	}
+	f, _ := os.Create("dump.1")
+	defer f.Close()
+	fmt.Println("test")
+	m := &parseS{debug:true}
+	m.init()
 
-	ret := []bson.M{}
+	// style1
+	//m.showpage("http://www.youku.com/show_page/id_z779fb5c8a25211e296da.html")
+	// style2
+	//m.showpage("http://www.youku.com/show_page/id_zc3dd544e3d0911e2b356.html")
+	// style3
+	//m.showpage("http://www.youku.com/show_page/id_z53c8401cc84411e2b356.html")
+	// style4
+	//m.showpage("http://www.youku.com/show_page/id_z6e78f9a0dd4511e196ac.html")
 
-	ret = parse_showpage("http://www.youku.com/show_page/id_zf3b63266595211e29498.html")
-	dump("1", ret)
+	m.showpage("http://www.youku.com/show_page/id_z1b477bfe2fba11e2b16f.html")
 
-	ret = parse_showpage("http://www.youku.com/show_page/id_z53c8401cc84411e2b356.html")
-	dump("2", ret)
+	//m.yule()
 
-	//ret = parse_showpage("http://www.youku.com/show_page/id_zd69d747acaf711e2b356.html")
-	//dump(ret)
-
-	//ret = parse_showpage("http://www.youku.com/show_page/id_z47c8257c48bd11e29013.html")
-	//dump(ret)
+	m.wait()
 }
 

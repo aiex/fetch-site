@@ -155,6 +155,18 @@ func (mu *menuS) cat_dfs(seq []string, mustcat bool, at int, title string, qry..
 				seq, mustcat, at+1, c, append(qry, seq[at],c)...,
 			))
 		}
+		q = mu.qry(append(qry, seq[at], bson.M{"$exists": false})...)
+		nodes := []bson.M{}
+		q.All(&nodes)
+		for _, n := range nodes {
+			child = append(child, bson.M{
+				"type": "url",
+				"url": n["url"],
+				"title": n["title"],
+				"id": fmt.Sprint(mu.id),
+			})
+			mu.id++
+		}
 	}
 
 	ret["type"] = "dir"
