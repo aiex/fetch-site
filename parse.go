@@ -5,7 +5,6 @@ import (
 	"github.com/go-av/curl"
 
 	"github.com/shopsmart/mgo/bson"
-	"github.com/shopsmart/mgo"
 
 	"fmt"
 	"strings"
@@ -15,78 +14,129 @@ import (
 	"log"
 )
 
+type parseN struct {
+	my,n int
+}
+
 type parseS struct {
-	name string
-	l *sync.Mutex
+	cat string
 	w *sync.WaitGroup
+	l *sync.Mutex
 	list []bson.M
-	n int
-	threadN,running int
 	starttm time.Time
-	isend bool
+	attrs bson.M
+	tm int64
+
+	nrun,ndone,ncurl,ngot,ninsert parseN
+	per float64
+
+	stable,done bool
+	child []*parseS
 }
 
 func (m *parseS) init() {
 	m.l = &sync.Mutex{}
-	m.w = &sync.WaitGroup{}
 	m.list = []bson.M{}
 	m.starttm = time.Now()
-	m.w.Add(1)
+	m.attrs = bson.M{}
+	m.child = []*parseS{}
+	m.w = &sync.WaitGroup{}
+	m.tm = time.Now().UnixNano()
+}
 
-	go func() {
-		for {
-			if m.isend {
-				return
-			}
-			log.Println("parse:", m.name, "thread created", m.threadN, "running", m.running)
-			time.Sleep(time.Second)
-		}
+func (m *parseS) task(cb func(*parseS)) {
+	m.l.Lock()
+	defer m.l.Unlock()
+
+	m2 := &parseS{cat:m.cat}
+	m2.init()
+
+	for k,v := range m.attrs {
+		m2.attrs[k] = v
+	}
+
+	m.child = append(m.child, m2)
+	m.w.Add(1)
+	m.nrun.my++
+	go func () {
+		cb(m2)
+		m2.wait()
+		m.w.Done()
+		m.nrun.my--
 	}()
 }
 
-func (m *parseS) thread(cb func()) {
-	m.w.Add(1)
-	m.threadN++
-	m.running++
-	cb()
-	m.running--
-	m.w.Done()
+func (m *parseS) wait() {
+	m.stable = true
+	m.w.Wait()
+	m.done = true
+	m.ndone.my++
 }
 
-func (m *parseS) add(list []bson.M) {
+func (m *parseS) sumup() {
 	m.l.Lock()
 	defer m.l.Unlock()
-	m.list = append(m.list, list...)
-}
 
-func (m *parseS) end() {
-	m.w.Done()
-	m.w.Wait()
-
-	got := 0
-	n := len(m.list)
-	t := time.Now().UnixNano()
-	dt := time.Now()
-	for _, l := range m.list {
-		l["cat"] = m.name
-		l["createtime"] = t
-		l["createdate"] = dt
-		t--
-		err := C("videos").Insert(l)
-		if err != nil && mgo.IsDup(err) {
-			n--
-		}
-		if err == nil {
-			got++
-		}
+	if !m.stable {
+		return
 	}
 
-	log.Println(
-		"parse:", m.name, "got", len(m.list),
-		"insert", got, "new", n,
-		"time", time.Since(m.starttm),
-		)
-	m.isend = true
+	m.nrun.n = m.nrun.my
+	m.ncurl.n = m.ncurl.my
+	m.ndone.n = m.ndone.my
+	m.ngot.n = m.ngot.my
+	m.ninsert.n = m.ninsert.my
+	per := float64(0)
+
+	for _, c := range m.child {
+		c.sumup()
+		m.nrun.n += c.nrun.n
+		m.ncurl.n += c.ncurl.n
+		m.ndone.n += c.ndone.n
+		m.ngot.n += c.ngot.n
+		m.ninsert.n += c.ninsert.n
+		per += c.per/float64(len(m.child))
+	}
+
+	if m.done { m.per = 1 } else { m.per = per }
+
+	return
+}
+
+func (m *parseS) curl(url string) (ret string) {
+	_, ret = curl.String(url, "timeout=10")
+	m.ncurl.my++
+	return
+}
+
+func (m *parseS) setattr(a bson.M) (b bson.M) {
+	for k,v := range m.attrs {
+		a[k] = v
+	}
+	return a
+}
+
+func (m *parseS) add(a bson.M) {
+	m.l.Lock()
+	//log.Println("parse:", m.cat, "added 1")
+	a = m.setattr(a)
+	m.list = append(m.list, a)
+	m.ngot.my++
+	m.l.Unlock()
+
+	m.insert(a)
+}
+
+func (m *parseS) insert(a bson.M) {
+	dt := time.Now()
+	a["cat"] = m.cat
+	a["createtime"] = m.tm
+	a["createdate"] = dt
+	m.tm--
+	err := C("videos").Insert(a)
+	if err == nil {
+		m.ninsert.my++
+	}
 }
 
 func getmatch(str,reg string) (ret string) {
@@ -125,7 +175,7 @@ func getname(str string) (name string) {
 	return getmatch(str, `<span class="name">([^<]+)</span>`)
 }
 
-func parse_episode2(str, cati string) (ret []bson.M) {
+func (m *parseS) episode2(str, cati string) {
 	larr := strings.Split(str, "\n")
 	coll10 := false
 	for i, l := range larr {
@@ -137,7 +187,7 @@ func parse_episode2(str, cati string) (ret []bson.M) {
 			tags := gettags(l)
 			title := getattr(l, "title")
 			if href != "" && len(tags) > 0 {
-				ret = append(ret, bson.M{cati: tags[0], "_id": href, "title": title})
+				m.add(bson.M{cati:tags[0], "_id":href, "title":title})
 			}
 			continue
 		}
@@ -151,31 +201,29 @@ func parse_episode2(str, cati string) (ret []bson.M) {
 			if href == "" {
 				continue
 			}
-			ret = append(ret, bson.M{cati: no, "_id": href, "title": title})
+
+			m.add(bson.M{cati:no, "_id":href, "title":title})
 		}
 	}
 	return
 }
 
-func parse_episode(showurl string, epi []string) (ret []bson.M) {
+func (m *parseS) episode(showurl string, epi []string) {
 	for ie := len(epi)-1; ie >= 0; ie-- {
 		e := epi[ie]
 		eurl := strings.Replace(showurl, "show_page", "show_episode", -1)
 		reload_e := "reload_" + e
 		eurl += "?dt=json&divid="+reload_e+"&__rt=1&"+"__ro="+reload_e
-		_, estr := curl.String(eurl)
-		eret := parse_episode2(estr, "cat2")
-		for il := 0; il < len(eret); il++ {
-			rl := eret[il]
-			rl["cat1"] = e
-			ret = append(ret, rl)
-		}
+		estr := m.curl(eurl)
+		m.attrs["cat1"] = e
+		m.task(func (m2 *parseS) {
+			m2.episode2(estr, "cat2")
+		})
 	}
 	return
 }
 
-func parse_showpage(url string) (ret []bson.M) {
-	ret = []bson.M{}
+func (m *parseS) showpage(url string) {
 	typs := []string{}
 	regions := []string{}
 	episode := []string{}
@@ -184,7 +232,7 @@ func parse_showpage(url string) (ret []bson.M) {
 	year := ""
 	month := ""
 
-	_, str := curl.String(url)
+	str := m.curl(url)
 	lines := strings.Split(str, "\n")
 	for i, l := range lines {
 		// 播放正片
@@ -214,31 +262,35 @@ func parse_showpage(url string) (ret []bson.M) {
 		}
 	}
 
+	if len(typs) > 0 { m.attrs["type"] = typs }
+	if len(regions) > 0 { m.attrs["regions"] = regions }
+	if year != "" { m.attrs["year"] = year }
+	if month != "" { m.attrs["month"] = month }
+	m.attrs["series"] = title
+	m.attrs["showpage"] = url
+
 	if oneurl != "" {
-		ret = append(ret, bson.M{"_id": oneurl, "title": title})
+		m.add(bson.M{"_id": oneurl, "title": title})
 	}
-	ret = append(ret, parse_episode2(str, "cat1")...)
+	m.episode2(str, "cat1")
 	if len(episode) > 0 {
-		ret = append(ret, parse_episode(url, episode)...)
-	}
-
-	cat := bson.M{}
-	if len(typs) > 0 { cat["type"] = typs }
-	if len(regions) > 0 { cat["regions"] = regions }
-	if year != "" { cat["year"] = year }
-	if month != "" { cat["month"] = month }
-	cat["series"] = title
-	cat["showpage"] = url
-
-	for _, l := range ret {
-		for k, v := range cat { l[k] = v }
+		m.episode(url, episode)
 	}
 
 	return
 }
 
-func parse_searchpage_big(search string) (list []string) {
-	_, str := curl.String(search)
+func (m *parseS) showpages(urls []string) {
+	for _, u := range urls {
+		url := u
+		m.task(func (m2 *parseS) {
+			m2.showpage(url)
+		})
+	}
+}
+
+func (m *parseS) searchpage_big(search string) (list []string) {
+	str := m.curl(search)
 	for _, l := range strings.Split(str, "\n") {
 		if strings.Contains(l, "p_title") {
 			url := gethref(l)
@@ -248,21 +300,21 @@ func parse_searchpage_big(search string) (list []string) {
 	return
 }
 
-func parse_searchpage_small(search string) (list []bson.M) {
-	_, str := curl.String(search)
+func (m *parseS) searchpage_small(search string) {
+	str := m.curl(search)
 	for _, l := range strings.Split(str, "\n") {
 		if strings.Contains(l, "v_title") {
 			b := bson.M{}
 			b["_id"] = getmatch(l, `href="([^"]+)"`)
 			b["title"] = getmatch(l, `title="([^"]+)"`)
-			list = append(list, b)
+			m.add(b)
 		}
 	}
 	return
 }
 
-func parse_searchpage_movie(search string) (list []string) {
-	_, str := curl.String(search)
+func (m *parseS) searchpage_movie(search string) (list []string) {
+	str := m.curl(search)
 	//fmt.Println(str)
 	url := ""
 
@@ -279,23 +331,18 @@ func parse_searchpage_movie(search string) (list []string) {
 	return
 }
 
-func parse_searchpage_all(
+func (m *parseS) searchpage_all(
 	prefix string,
 	fmts map[string]string,
-	cat string,
-	cb func (string)([]bson.M),
-) (p *parseS) {
-
-	p = &parseS{name:cat}
-	p.init()
-
+	cb func (*parseS, string),
+) {
 	for t, f := range fmts {
 		for i := 1; i < 2; i++ {
-			p.thread(func () {
-				search := fmt.Sprintf(prefix+f, i)
-				ret := cb(search)
-				for _, l := range ret { l["play"] = t }
-				p.add(ret)
+			search := fmt.Sprintf(prefix+f, i)
+			play := t
+			m.task(func (m2 *parseS) {
+				m2.attrs["play"] = play
+				cb(m2, search)
 			})
 		}
 	}
@@ -303,7 +350,24 @@ func parse_searchpage_all(
 	return
 }
 
-func parse_movie() (p *parseS) {
+func (m *parseS) news_template(fmts map[string]string) {
+	prefix := "http://www.youku.com/v_showlist/"
+	m.searchpage_all(prefix, fmts,
+	func (m2 *parseS, url string) {
+		m2.searchpage_small(url)
+	})
+}
+
+func (m *parseS) zongyi_template(fmts map[string]string) {
+	prefix := "http://www.youku.com/v_olist/"
+	m.searchpage_all(prefix, fmts,
+	func (m2 *parseS, url string) {
+		urls := m2.searchpage_big(url)
+		m2.showpages(urls)
+	})
+}
+
+func (m *parseS) movie() {
 	fmts := map[string]string {
 		//"用户好评": "c_96_a__s__g__r__lg__im__st__mt__tg__d_1_et_0_fv_0_fl__fc__fe_1_o_11_p_%d.html",
 		//"近期更新": "c_96_a__s__g__r__lg__im__st__mt__tg__d_1_et_0_fv_0_fl__fc__fe_1_o_10_p_%d.html",
@@ -313,34 +377,14 @@ func parse_movie() (p *parseS) {
 	}
 	prefix := "http://www.youku.com/v_olist/"
 
-	return parse_searchpage_all(prefix, fmts, "movie",
-	func (url string) (ret []bson.M) {
-		urls := parse_searchpage_movie(url)
-		for _, u := range urls {
-			ret = append(ret, parse_showpage(u)...)
-		}
-		return
+	m.searchpage_all(prefix, fmts,
+	func (m2 *parseS, url string) {
+		urls := m2.searchpage_movie(url)
+		m2.showpages(urls)
 	})
 }
 
-func parse_news_template(cat string, fmts map[string]string) (p *parseS) {
-	prefix := "http://www.youku.com/v_showlist/"
-	return parse_searchpage_all(prefix, fmts, cat, parse_searchpage_small)
-}
-
-func parse_zongyi_template(cat string, fmts map[string]string) (p *parseS) {
-	prefix := "http://www.youku.com/v_olist/"
-	return parse_searchpage_all(prefix, fmts, cat,
-	func (url string) (ret []bson.M) {
-		urls := parse_searchpage_big(url)
-		for _, u := range urls {
-			ret = append(ret, parse_showpage(u)...)
-		}
-		return
-	})
-}
-
-func parse_news() (p *parseS) {
+func (m *parseS) news() {
 	// 资讯今日最新
 	fmts := map[string]string {
 		"社会新闻": "t1c91g2143d1p%d.html",
@@ -351,101 +395,129 @@ func parse_news() (p *parseS) {
 		"财经新闻":	"t1c91g308d1p%d.html",
 		"法律新闻": "t1c91g2351d1p%d.html",
 	}
-	return parse_news_template("news", fmts)
+	m.news_template(fmts)
 }
 
-func parse_yule() (p *parseS) {
+func (m *parseS) yule() {
 	// 娱乐今日最多播放
 	fmts := map[string]string {
 		"最多播放": "t2c86g0d1p%d.html",
 	}
-	return parse_news_template("yule", fmts)
+	m.news_template(fmts)
 }
 
-func parse_zongyi() (p *parseS) {
+func (m *parseS) zongyi() {
 	// 综艺今日增加播放
 	fmts := map[string]string {
 		"最多播放": "c_85_a__s__g__r__lg__im__st__mt__d_1_et_0_fv_0_fl__fc__fe_1_o_7_p_%d.html",
 	}
-	return parse_zongyi_template("zongyi", fmts)
+	m.zongyi_template(fmts)
 }
 
-func parse_jilu() (p *parseS) {
+func (m *parseS) jilu() {
 	// 纪录片今日增加播放
 	fmts := map[string]string {
 		"最多播放": "c_84_a__s__g__r__lg__im__st__mt__tg__d_1_et_0_fv_0_fl__fc__fe__o_7_p_%d.html",
 	}
-	return parse_zongyi_template("jilu", fmts)
+	m.zongyi_template(fmts)
 }
 
-func parse_jiaoyu() (p *parseS) {
+func (m *parseS) jiaoyu() {
 	// 教育今日增加播放
 	fmts := map[string]string {
 		"最多播放": "c_87_a__s__g__r__lg__im__st__mt__tg__d_1_et_0_fv_0_fl__fc__fe__o_7_p_%d.html",
 	}
-	return parse_zongyi_template("jiaoyu", fmts)
+	m.zongyi_template(fmts)
 }
 
-func parse_tiyu() (p *parseS) {
+func (m *parseS) tiyu() {
 	// 体育今日最多播放
 	fmts := map[string]string {
 		"最多播放": "t2c98g0d1p%d.html",
 	}
-	return parse_news_template("tiyu", fmts)
+	m.news_template(fmts)
 }
 
-func parse_qiche() (p *parseS) {
+func (m *parseS) qiche() {
 	// 汽车今日
 	fmts := map[string]string {
 		"最多播放": "t2c98g0d1p%d.html",
 	}
-	return parse_news_template("qiche", fmts)
+	m.news_template(fmts)
 }
 
-func parse_dianshi() (p *parseS) {
+func (m *parseS) dianshi() {
 	fmts := map[string]string {
 		"最多播放": "c_97_a__s__g__r__lg__im__st__mt__tg__d_1_et_0_fv_0_fl__fc__fe__o_7_p_%d.html",
 	}
-	return parse_zongyi_template("dianshi", fmts)
-}
-
-func _parse_loop(oneshot bool) {
-
-	type parseF func () (*parseS)
-
-	loop := func (cb parseF) {
-		for {
-			p := cb()
-			p.end()
-			if oneshot {
-				break
-			}
-			time.Sleep(time.Second*120)
-		}
-	}
-
-	go loop(parse_news)
-	go loop(parse_zongyi)
-	go loop(parse_movie)
-	go loop(parse_jilu)
-	go loop(parse_jiaoyu)
-	go loop(parse_yule)
-	go loop(parse_tiyu)
-	go loop(parse_qiche)
-	go loop(parse_dianshi)
-
-	for {
-		time.Sleep(time.Second*120)
-	}
+	m.zongyi_template(fmts)
 }
 
 func parse_loop() {
 	log.Println("parse: loop starts")
-	_parse_loop(false)
 }
 
 func parse_oneshot() {
-	log.Println("parse: one shot")
-	_parse_loop(true)
+	log.Println("parse: starts")
+	m := &parseS{}
+	m.init()
+
+	done := make(chan int, 0)
+
+	go func() {
+
+		tm := time.Now()
+		m.task(func (m2 *parseS) {
+			m2.cat = "zongyi"
+			m2.zongyi()
+		})
+		m.task(func (m2 *parseS) {
+			m2.cat = "dianshi"
+			m2.dianshi()
+		})
+		m.task(func (m2 *parseS) {
+			m2.cat = "yule"
+			m2.yule()
+		})
+		m.task(func (m2 *parseS) {
+			m2.cat = "news"
+			m2.news()
+		})
+		m.task(func (m2 *parseS) {
+			m2.cat = "movie"
+			m2.movie()
+		})
+		m.task(func (m2 *parseS) {
+			m2.cat = "qiche"
+			m2.qiche()
+		})
+		m.task(func (m2 *parseS) {
+			m2.cat = "tiyu"
+			m2.tiyu()
+		})
+		m.task(func (m2 *parseS) {
+			m2.cat = "jilu"
+			m2.jilu()
+		})
+
+		m.task(func (m2 *parseS) {
+			m2.cat = "jiaoyu"
+			m2.jiaoyu()
+		})
+		m.wait()
+		log.Println("parse: done in", time.Since(tm))
+		done <- 1
+	}()
+
+	for {
+		m.sumup()
+		select {
+		case <-done:
+			log.Println("parse:", "got", m.ngot.n, "insert", m.ninsert.n)
+			return
+		case <-time.After(time.Second):
+			log.Println("parse:", curl.PrettyPer(m.per), "got", m.ngot.n, "insert", m.ninsert.n, "thread", m.nrun.n)
+		}
+	}
 }
 
