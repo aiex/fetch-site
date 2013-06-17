@@ -8,7 +8,6 @@ import (
 	"github.com/shopsmart/mgo/bson"
 
 	"time"
-	"fmt"
 	"os"
 	"path/filepath"
 	"errors"
@@ -17,16 +16,6 @@ import (
 	"log"
 )
 
-func strhash(in string) (r int) {
-	for _, ch := range in {
-		r = int(ch) + (r<<6) + (r<<16) - r
-	}
-	if r < 0 {
-		r = -r
-	}
-	return
-}
-
 func canfetch() (bson.M) {
 	return bson.M {
 		"fetched": bson.M{"$exists":false},
@@ -34,8 +23,8 @@ func canfetch() (bson.M) {
 	}
 }
 
-func download_one(url,prefix,tag string, maxdur time.Duration) {
-	dir := fmt.Sprintf("%.8d", strhash(url)%1e8)
+func download_one(id,url,prefix,tag string, maxdur time.Duration) {
+	dir := id
 
 	path := filepath.Join(prefix, dir)
 	os.Mkdir(path, 0777)
@@ -50,14 +39,21 @@ func download_one(url,prefix,tag string, maxdur time.Duration) {
 		}
 		*/
 		log.Println("fetch:", tag, dir, curl.PrettyDur(st.Dur),
-				st.Io.Speedstr,
-				curl.PrettyPer(st.Per), curl.PrettySize(st.Size))
+				st.Io.Speedstr,	curl.PrettyPer(st.Per), curl.PrettySize(st.Size),
+				st.Stat, st.Op)
+
 		if maxdur != time.Duration(0) && st.Dur > maxdur {
 			log.Println("fetch:", "video too long")
 			return errors.New("video too long")
 		}
 		return nil
-	}, "timeout=", 10, "maxspeed=", 1024*100)
+	}, "timeout=", 10,
+	//"maxspeed=", 1024*300,
+	)
+
+	if err != nil {
+		return
+	}
 
 	C("videos").Update(bson.M{"_id": url}, bson.M{
 		"$set": bson.M {
@@ -69,30 +65,24 @@ func download_one(url,prefix,tag string, maxdur time.Duration) {
 	log.Println("fetch: download end", err)
 }
 
-func bson_getid(b bson.M) (id string) {
-	_id, ok := b["_id"]
-	if ok {
-		id, _ = _id.(string)
-	}
-	return
-}
-
 type fetchS struct {
 	cat string
 	n int
 	flag string
 }
 
-func (m *fetchS) one() (url string) {
+func (m *fetchS) one() (id,url string) {
 	ret := bson.M{}
 	qry := canfetch()
 	qry["cat"] = m.cat
+	//qry["id"] = bson.M{"$ne": ""}
 	C("videos").Find(qry).Sort("-createtime").Limit(1).One(&ret)
-	url = bson_getid(ret)
+	id = bson_getid(ret)
+	url = bson_geturl(ret)
 	return
 }
 
-func (m *fetchS) randser() (url string) {
+func (m *fetchS) randser() (id,url string) {
 	series := []string{}
 	qry := canfetch()
 	qry["cat"] = m.cat
@@ -104,28 +94,41 @@ func (m *fetchS) randser() (url string) {
 	qry["series"] = ser
 	ret := bson.M{}
 	C("videos").Find(qry).Sort("-createtime").Limit(1).One(&ret)
-	url = bson_getid(ret)
+	id = bson_getid(ret)
+	url = bson_geturl(ret)
 	return
 }
 
 func (m *fetchS) get() {
 	url := ""
+	id := ""
 	if strings.Contains(m.flag, "one") {
-		url = m.one()
+		id,url = m.one()
 	}
 	if strings.Contains(m.flag, "ser") {
-		url = m.randser()
+		id,url = m.randser()
 	}
 	if url == "" {
 		log.Println("fetch: url empty")
+		return
+	}
+	if id == "" {
+		log.Println("fetch: id empty")
 		return
 	}
 	var maxdur time.Duration
 	if strings.Contains(m.flag, "short") {
 		maxdur = time.Minute*20
 	}
-	log.Println("fetch: downloading", url)
-	download_one(url, "fetch", m.cat, maxdur)
+	log.Println("fetch: downloading", id, url)
+	download_one(id, url, "fetch", m.cat, maxdur)
+}
+
+func fetch_oneshot() {
+	log.Println("fetch: oneshot")
+
+	f := &fetchS{"news", 1, "one"}
+	f.get()
 }
 
 func fetch_loop() {

@@ -3,7 +3,9 @@ package site
 
 import (
 	"github.com/shopsmart/mgo"
+	"github.com/shopsmart/mgo/bson"
 
+	"fmt"
 	"strings"
 	"os"
 	"os/exec"
@@ -43,8 +45,52 @@ func startdb() {
 	}
 }
 
+func strhash(in string) (ret string) {
+	r := 0
+	for _, ch := range in {
+		r = int(ch) + (r<<6) + (r<<16) - r
+	}
+	if r < 0 {
+		r = -r
+	}
+	ret = fmt.Sprintf("%.8d", r%1e8)
+	return
+}
+
+func bson_geturl(b bson.M) (id string) {
+	_id, ok := b["_id"]
+	if ok {
+		id, _ = _id.(string)
+	}
+	return
+}
+
+func bson_getid(b bson.M) (id string) {
+	_id, ok := b["id"]
+	if ok {
+		id, _ = _id.(string)
+	}
+	return
+}
+
 func C(c string) *mgo.Collection {
 	return gSess.DB("site").C(c)
+}
+
+func db_update_id() {
+	log.Println("db_update_id:", "starts")
+	n := 0
+	it := C("videos").Find(nil).Iter()
+	var ret bson.M
+	for it.Next(&ret) {
+		url, _ := ret["_id"].(string)
+		if url == "" {
+			continue
+		}
+		C("videos").Update(bson.M{"_id":url}, bson.M{"$set":bson.M{"id":strhash(url)}})
+		n++
+	}
+	log.Println("db_update_id:", "done", "total", n, "processed")
 }
 
 func Test() {
@@ -72,7 +118,7 @@ func Test() {
 		return
 	}
 
-	startdb()
+	//startdb()
 	initdb()
 
 	n := 0
@@ -105,6 +151,10 @@ func Test() {
 			menu_oneshot()
 		case "http":
 			http_loop()
+		case "fetch":
+			fetch_oneshot()
+		case "db_update_id":
+			db_update_id()
 		}
 	}
 

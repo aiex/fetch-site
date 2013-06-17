@@ -1,0 +1,28 @@
+<head>
+</head>
+
+<html>
+	<body>
+
+
+		<ul>
+		{{range .path}}
+		<li><a href="/menu/{{$.type}}/{{.Id}}">{{.Title}}</a></li>
+		{{end}}
+		</ul>
+		<hr>
+
+		{{with .node}}
+			{{range .Child}}
+			{{if .IsDir}}
+			<p>[目录]<a href="/menu/{{$.type}}/{{.Id}}">{{.Title}}</a><i>共{{.VidCnt}}个视频</i></p>
+			{{else}}
+			<p>[视频]<a href="{{.Url}}">{{.Title}}</a></p>
+			{{end}}
+			{{end}}
+
+		{{end}}
+
+	</body>
+</html>
+

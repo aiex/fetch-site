@@ -6,12 +6,14 @@ import (
 
 	"github.com/shopsmart/mgo/bson"
 
+	"os/exec"
 	"fmt"
 	"strings"
 	"regexp"
 	"time"
 	"sync"
 	"log"
+	"os"
 )
 
 type parseN struct {
@@ -142,6 +144,7 @@ func (m *parseS) insert(a bson.M) {
 	}
 
 	dt := time.Now()
+	a["id"] = strhash(bson_geturl(a))
 	a["cat"] = m.cat
 	a["createtime"] = m.tm
 	a["createdate"] = dt
@@ -503,6 +506,14 @@ func (m *parseS) dianshi() {
 
 func parse_loop() {
 	log.Println("parse: loop starts")
+
+	for {
+		log.Println("parse: exec", os.Args[0])
+		cmd := exec.Command(os.Args[0], "-do", "parse")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Run()
+	}
 }
 
 func parse_oneshot() {

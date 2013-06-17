@@ -5,7 +5,10 @@ import (
 	_"github.com/shopsmart/mgo/bson"
 	"github.com/astaxie/beego"
 
+	"fmt"
 	"strings"
+	"os"
+	"path/filepath"
 	"log"
 )
 
@@ -14,34 +17,45 @@ type menuC struct {
 }
 
 func (m *menuC) Get() {
-	filename := "www/all.json"
+	typ := "all"
+	filename := filepath.Join("www", "all.json")
 	if strings.Contains(m.Ctx.Request.URL.Path, "fetched") {
-		filename = "www/fetched.json"
+		typ = "fetched"
+		filename = filepath.Join("www", "fetched.json")
 	}
 
-	tree := &menuM{}
-	err := tree.load(filename)
+	w, err := os.Open(filename)
 	if err != nil {
-		log.Println("menu:", filename, "load failed")
+		log.Println("http:", "menu", typ, err)
 		m.Abort("404")
 		return
 	}
 
-	var node *menuM
+	tree := &menuM2{}
+	err = tree.load(w)
+	if err != nil {
+		log.Println("http:", filename, "load failed")
+		m.Abort("404")
+		return
+	}
+
+	var node *menuM2
 	id := m.Ctx.Params[":id"]
 	if id == "" {
 		node = tree
 	} else {
-		tree.findid(id)
-		node = tree.ptr
+		var id_ int
+		fmt.Sscanf(id, "%d", &id_)
+		node = tree.find(id_)
 	}
 	if node == nil {
-		log.Println("menu:", "id", id, "not found in", filename)
+		log.Println("http:", "id", id, "not found in", filename)
 		m.Abort("404")
 		return
 	}
 
-	m.Data["path"] = tree.path
+	m.Data["type"] = typ
+	m.Data["path"] = node.Path()
 	m.Data["node"] = node
 	m.TplNames = "menu.html"
 }
