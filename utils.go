@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"log"
+	"bufio"
 	"time"
 )
 
@@ -17,10 +18,35 @@ var (
 	gSess *mgo.Session
 )
 
+func filelines(f string) (l []string) {
+	l = []string{}
+	r, err := os.Open(f)
+	if err != nil {
+		return
+	}
+	br := bufio.NewReader(r)
+	for {
+		s, e := br.ReadString('\n')
+		if e != nil {
+			break
+		}
+		l = append(l, s)
+	}
+	return
+}
+
+func filetail(f string, n int) (l []string) {
+	l = filelines(f)
+	if n < len(l) {
+		l = l[len(l)-n:len(l)]
+	}
+	return
+}
+
 func initdb() {
 	log.Println("db: connecting")
 	url := "localhost"
-	sess, err := mgo.DialWithTimeout(url, time.Second*20)
+	sess, err := mgo.DialWithTimeout(url, time.Minute*10)
 	if err != nil {
 		log.Println("db: connect failed")
 		os.Exit(1)
@@ -57,20 +83,59 @@ func strhash(in string) (ret string) {
 	return
 }
 
-func bson_geturl(b bson.M) (id string) {
-	_id, ok := b["_id"]
-	if ok {
-		id, _ = _id.(string)
+func bsons(b bson.M, name string) (s string) {
+	var intf interface{}
+	var ok bool
+	intf, ok = b[name]
+	if !ok {
+		return
 	}
+	s, _ = intf.(string)
 	return
 }
 
-func bson_getid(b bson.M) (id string) {
-	_id, ok := b["id"]
-	if ok {
-		id, _ = _id.(string)
+func bsoni(b bson.M, name string) (i int64) {
+	var intf interface{}
+	var ok bool
+	intf, ok = b[name]
+	if !ok {
+		return
 	}
+	i, _ = intf.(int64)
 	return
+}
+
+func bsondur(b bson.M, name string) (dur time.Duration) {
+	return time.Duration(bsoni(b, name))
+}
+
+func bsontm(b bson.M, name string) (tm time.Time) {
+	var intf interface{}
+	var ok bool
+	intf, ok = b[name]
+	if !ok {
+		return
+	}
+	tm, _ = intf.(time.Time)
+	return
+}
+
+func db_test() {
+	log.Println("dbtest")
+	gSess.DB("test").C("test").RemoveAll(bson.M{})
+	gSess.DB("test").C("test").Insert(bson.M{
+		"i": int64(32),
+		"dur": time.Second,
+		"tm": time.Now(),
+		"url": "ahha",
+	})
+	m := bson.M{}
+	gSess.DB("test").C("test").Find(nil).One(&m)
+
+	log.Println(bsontm(m, "tm"))
+	log.Println(bsondur(m, "dur"))
+	log.Println(bsons(m, "dur"))
+	log.Println(bsons(m, "url"))
 }
 
 func C(c string) *mgo.Collection {
@@ -100,9 +165,15 @@ func Test() {
 		log.Println("no args")
 		return
 	}
+	if os.Args[1] == "testdb" {
+		initdb()
+		db_test()
+		return
+	}
 
 	loops := []string{}
 	dos := []string{}
+	logs := []string{}
 	args := os.Args[1:]
 	for i, o := range args {
 		if o == "-loop" && i+1 < len(args) {
@@ -111,10 +182,13 @@ func Test() {
 		if o == "-do" && i+1 < len(args) {
 			dos = strings.Split(args[i+1], ",")
 		}
+		if o == "-log" && i+1 < len(args) {
+			logs = strings.Split(args[i+1], ",")
+		}
 	}
 
-	if len(loops) == 0 && len(dos) == 0 {
-		log.Println("must specify -loop or -do")
+	if len(loops) == 0 && len(dos) == 0 && len(logs) == 0 {
+		log.Println("must specify -loop or -do or -log")
 		return
 	}
 
@@ -155,6 +229,15 @@ func Test() {
 			fetch_oneshot()
 		case "db_update_id":
 			db_update_id()
+		}
+	}
+
+	for _, s := range logs {
+		switch s {
+		case "fetch":
+			for _, e := range fetch_log() {
+				log.Println(e)
+			}
 		}
 	}
 

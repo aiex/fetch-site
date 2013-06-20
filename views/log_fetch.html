@@ -1,0 +1,13 @@
+抓取列表:
+<hr>
+当前下载:<p>
+	{{with .cur}}
+		{{}}
+	{{end}}
+</p>
+<ul>
+	{{range .list}}
+	<li>[{{.tm}}] <b>{{.title}}</b> (类别{{.cat}}) 时长 {{.dur}} 大小 {{.size}}</li>
+	{{end}}
+</ul>
+

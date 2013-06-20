@@ -1,0 +1,14 @@
+
+爬虫信息
+<hr>
+{{if .fetching}}
+{{with .fetching}}
+<p>抓取中 进度{{.per}} 个数{{.nr}}</p>
+{{end}}
+{{end}}
+<ul>
+	{{range .list}}
+	<li>[{{.tm}}]抓取{{.nr}}个视频，新增{{.newnr}}个视频</li>
+	{{end}}
+</ul>
+

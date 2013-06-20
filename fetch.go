@@ -20,10 +20,12 @@ func canfetch() (bson.M) {
 	return bson.M {
 		"fetched": bson.M{"$exists":false},
 		"error": bson.M{"$exists":false},
+		"id": bson.M{"$ne":""},
+		"url": bson.M{"$ne":""},
 	}
 }
 
-func download_one(id,url,prefix,tag string, maxdur time.Duration) {
+func download_one(id,url,prefix,tag string, maxdur time.Duration) (err error) {
 	dir := id
 
 	path := filepath.Join(prefix, dir)
@@ -31,23 +33,27 @@ func download_one(id,url,prefix,tag string, maxdur time.Duration) {
 
 	filename := filepath.Join(path, "a.ts")
 
-	err := fetcher.DownloadM3u8(url, filename,
-	func (st fetcher.Stat) error {
-		/*
-		if st.Op != "downloading" {
-			return nil
-		}
-		*/
-		log.Println("fetch:", tag, dir, curl.PrettyDur(st.Dur),
-				st.Io.Speedstr,	curl.PrettyPer(st.Per), curl.PrettySize(st.Size),
-				st.Stat, st.Op)
+	var fst fetcher.Stat
 
-		if maxdur != time.Duration(0) && st.Dur > maxdur {
-			log.Println("fetch:", "video too long")
-			return errors.New("video too long")
-		}
-		return nil
-	}, "timeout=", 10,
+	err = fetcher.Get(url, filename,
+		func (st fetcher.Stat) error {
+			/*
+			if st.Op != "downloading" {
+				return nil
+			}
+			*/
+			log.Println("fetch:", tag, dir, curl.PrettyDur(st.Dur),
+					st.Io.Speedstr,	curl.PrettyPer(st.Per), curl.PrettySize(st.Size),
+					st.Stat, st.Op)
+
+			if maxdur != time.Duration(0) && st.Dur > maxdur {
+				log.Println("fetch:", "video too long")
+				return errors.New("video too long")
+			}
+			return nil
+		},
+		&fst,
+		"timeout=", 10,
 	//"maxspeed=", 1024*300,
 	)
 
@@ -59,10 +65,14 @@ func download_one(id,url,prefix,tag string, maxdur time.Duration) {
 		"$set": bson.M {
 			"fetched": dir,
 			"url": "/fetch/"+dir+"/a.ts",
+			"donetm": time.Now(),
+			"size": fst.Size,
+			"dur": fst.Dur,
 		},
 	})
 
 	log.Println("fetch: download end", err)
+	return
 }
 
 type fetchS struct {
@@ -77,8 +87,8 @@ func (m *fetchS) one() (id,url string) {
 	qry["cat"] = m.cat
 	//qry["id"] = bson.M{"$ne": ""}
 	C("videos").Find(qry).Sort("-createtime").Limit(1).One(&ret)
-	id = bson_getid(ret)
-	url = bson_geturl(ret)
+	id = bsons(ret, "id")
+	url = bsons(ret, "_id")
 	return
 }
 
@@ -94,12 +104,12 @@ func (m *fetchS) randser() (id,url string) {
 	qry["series"] = ser
 	ret := bson.M{}
 	C("videos").Find(qry).Sort("-createtime").Limit(1).One(&ret)
-	id = bson_getid(ret)
-	url = bson_geturl(ret)
+	id = bsons(ret, "id")
+	url = bsons(ret, "_id")
 	return
 }
 
-func (m *fetchS) get() {
+func (m *fetchS) get() (err error) {
 	url := ""
 	id := ""
 	if strings.Contains(m.flag, "one") {
@@ -108,27 +118,75 @@ func (m *fetchS) get() {
 	if strings.Contains(m.flag, "ser") {
 		id,url = m.randser()
 	}
-	if url == "" {
-		log.Println("fetch: url empty")
-		return
-	}
-	if id == "" {
-		log.Println("fetch: id empty")
-		return
-	}
 	var maxdur time.Duration
 	if strings.Contains(m.flag, "short") {
 		maxdur = time.Minute*20
 	}
 	log.Println("fetch: downloading", id, url)
-	download_one(id, url, "fetch", m.cat, maxdur)
+	err = download_one(id, url, "fetch", m.cat, maxdur)
+	if err != nil {
+		C("videos").Remove(bson.M{"id": id})
+	}
+	return
 }
 
 func fetch_oneshot() {
 	log.Println("fetch: oneshot")
 
-	f := &fetchS{"news", 1, "one"}
-	f.get()
+	f := &fetchS{"news", 1, "one|short"}
+	for {
+		err := f.get()
+		if err == nil {
+			break
+		}
+	}
+}
+
+type fetchL struct {
+	tm time.Time
+	done bool
+	id string
+	title string
+	cat string
+	speed string
+	dur string
+	size string
+}
+
+func fetch_log() (logs []fetchL) {
+	logs = []fetchL{}
+
+	cur := fetchL{}
+	lines := filetail("fetch.log", 20)
+	for _, l := range lines {
+		f := strings.Split(l, " ")
+		if len(f) < 9 {
+			continue
+		}
+		cur.id = f[4]
+		cur.dur = f[5]
+		cur.speed = f[6]
+		cur.size = f[7]
+	}
+
+	if cur.id != "" {
+		logs = append(logs, cur)
+	}
+
+	qm := bson.M{"donetm": bson.M{"$exists":true}}
+	iter := C("videos").Find(qm).Sort("-donetm").Limit(20).Iter()
+	m := bson.M{}
+	for iter.Next(&m) {
+		l := fetchL{}
+		l.done = true
+		l.tm = bsontm(m, "donetm")
+		l.title = bsons(m, "title")
+		l.cat = bsons(m, "cat")
+		l.dur = curl.PrettyDur(bsondur(m, "dur"))
+		l.size = curl.PrettySize(bsoni(m, "size"))
+		logs = append(logs, l)
+	}
+	return
 }
 
 func fetch_loop() {
@@ -157,3 +215,4 @@ func fetch_loop() {
 		}
 	}
 }
+

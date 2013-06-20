@@ -144,7 +144,7 @@ func (m *parseS) insert(a bson.M) {
 	}
 
 	dt := time.Now()
-	a["id"] = strhash(bson_geturl(a))
+	a["id"] = strhash(bsons(a, "_id"))
 	a["cat"] = m.cat
 	a["createtime"] = m.tm
 	a["createdate"] = dt
@@ -504,6 +504,14 @@ func (m *parseS) dianshi() {
 	m.zongyi_template(fmts)
 }
 
+type parseL struct {
+	tm time.Time
+}
+
+func parse_log() (logs []parseL) {
+	return
+}
+
 func parse_loop() {
 	log.Println("parse: loop starts")
 
@@ -513,6 +521,7 @@ func parse_loop() {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Run()
+		time.Sleep(time.Second*120)
 	}
 }
 

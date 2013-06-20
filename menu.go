@@ -50,6 +50,17 @@ func (m *menuM2) setparent() {
 	}
 }
 
+func (m *menuM2) loadfile(name string) (err error) {
+	fp, e := os.Open(name)
+	err = e
+	if err != nil {
+		return
+	}
+	defer fp.Close()
+	err = m.load(fp)
+	return
+}
+
 func (m *menuM2) load(r io.Reader) (err error) {
 	dec := json.NewDecoder(r)
 	err = dec.Decode(m)
@@ -137,7 +148,7 @@ func menu2_get(filename string) {
 	if strings.Contains(filename, "fetched") {
 		m["fetched"] = bson.M{"$exists": true}
 	}
-	q := C("videos").Find(m)
+	q := C("videos").Find(m).Sort("-createtime")
 	n, _ := q.Count()
 	it := q.Iter()
 
@@ -153,18 +164,18 @@ func menu2_get(filename string) {
 	}
 
 	type catS struct {
-		cat,title,dirs,flags string
+		cat,title,dirs string
 	}
 	cats := []*catS {
-		&catS{"yule", "娱乐", "", "limit"},
-		&catS{"news", "新闻", "", "limit"},
-		&catS{"zongyi", "综艺", "series,cat1,cat2", ""},
-		&catS{"movie", "电影", "regions", ""},
-		&catS{"jilu", "纪录片", "series,cat1,cat2", ""},
-		&catS{"jiaoyu", "教育", "series,cat1,cat2", ""},
-		&catS{"tiyu", "体育", "", "limit"},
-		&catS{"qiche", "汽车", "", "limit"},
-		&catS{"dianshi", "电视剧", "series,cat1,cat2", "limit"},
+		&catS{cat:"yule", title:"娱乐"},
+		&catS{cat:"news", title:"新闻"},
+		&catS{cat:"zongyi", title:"综艺", dirs:"series,cat1,cat2"},
+		&catS{cat:"movie", title:"电影", dirs:"regions"},
+		&catS{cat:"jilu", title:"纪录片", dirs:"series,cat1,cat2"},
+		&catS{cat:"jiaoyu", title:"教育", dirs:"series,cat1,cat2"},
+		&catS{cat:"tiyu", title:"体育"},
+		&catS{cat:"qiche", title:"汽车"},
+		&catS{cat:"dianshi", title:"电视剧", dirs:"series,cat1,cat2"},
 	}
 
 	log.Println("menu:", filename, "starts processing")
@@ -189,13 +200,19 @@ func menu2_get(filename string) {
 			astr := gstr(m, attr)
 			dirs2 = append(dirs2, astr)
 		}
-		mu.insert(dirs2, gstr(m, "title"), gstr(m, "_id"))
+		title := gstr(m, "title")
+		if gstr(m, "new") == "1" {
+			title = "[新]" + title
+		}
+		mu.insert(dirs2, title, gstr(m, "url"))
 		if time.Since(tm) > time.Second {
 			log.Println("menu:", filename, "processing", i,"/",n)
 			tm = time.Now()
 		}
 		i++
 	}
+
+	C("videos").Update(bson.M{}, bson.M{"$unset": bson.M{"new": ""}})
 
 	mu.setid(0)
 	log.Println("menu:", filename, "processed", i)

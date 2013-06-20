@@ -31,6 +31,15 @@ func (m *menuC) Get() {
 		return
 	}
 
+	var fi os.FileInfo
+	fi, err = w.Stat()
+	if err != nil {
+		log.Println("http:", "menu", typ, err)
+		m.Abort("404")
+		return
+	}
+	m.Data["mtm"] = fi.ModTime()
+
 	tree := &menuM2{}
 	err = tree.load(w)
 	if err != nil {
@@ -60,6 +69,27 @@ func (m *menuC) Get() {
 	m.TplNames = "menu.html"
 }
 
+type logFetchC struct {
+	beego.Controller
+}
+
+func (m *logFetchC) Get() {
+}
+
+type logSysC struct {
+	beego.Controller
+}
+
+func (m *logSysC) Get() {
+}
+
+type logParseC struct {
+	beego.Controller
+}
+
+func (m *logParseC) Get() {
+}
+
 func http_loop() {
 	beego.SetStaticPath("/www", "www")
 	beego.SetStaticPath("/fetch", "fetch")
@@ -67,6 +97,9 @@ func http_loop() {
 	beego.Router("/menu/fetched", &menuC{})
 	beego.Router("/menu/all/:id:int", &menuC{})
 	beego.Router("/menu/fetched/:id:int", &menuC{})
+	beego.Router("/log/system", &logSysC{})
+	beego.Router("/log/fetch", &logFetchC{})
+	beego.Router("/log/parse", &logParseC{})
 	beego.RunMode = "dev"
 	beego.Run()
 }
